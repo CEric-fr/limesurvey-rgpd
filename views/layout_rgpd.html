@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="fr" >
+<head>
+	<link rel="stylesheet" type="text/css" href="/assets/packages/bootstrap/bootstrap.css">
+	<script type="text/javascript" src="/third_party/jquery/jquery-3.4.1.min.js"></script>
+	<script type="text/javascript" src="/third_party/jquery/jquery-migrate-3.1.0.min.js"></script>
+	<script type="text/javascript" src="/assets/packages/bootstrap/bootstrap.min.js"></script>
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<title>Enquêtes - RGPD</title>
+	<style>
+		h1 {
+			text-align: center;
+		}
+		body {
+			margin:0 auto;
+			padding:0 0.5vw;
+			max-width:980px;
+		}
+		.ap_margin {
+			margin-left:0px !important;
+			margin-right:0px !important;
+		}
+	</style>
+	<script type="text/javascript" language="javascript">
+		function acp_go(url) {
+			val=0
+			if(document.getElementById('rgpd_ok').checked==true) val=1;
+			url=url+'&rgpd_ok='+val;
+			document.location.href=url;
+			return false;
+		}
+	</script>
+</head>
+<body>
+<div class="row">
+	<img class="logo img-responsive" src="##rgpd_logo##" alt="##rgpd_altlogo##" title="##rgpd_altlogo##">
+</div>
+<h1>Politique de protection des données<br />&nbsp;</h1>
+<form id="rgpd" method="post" action="##acp_url_ici##" onSubmit="acp_go(this.action);return false;">
+<div class="row">
+    <div class="col-sm-12">
+	<p><b>Pour accéder au questionnaire "##surveyls_title##".</b></p>
+        <label for="rgpd_ok" class="control-label">
+			<b><a href="#data-security-modal-##sid##" data-toggle="collapse" class="collapsed" aria-expanded="false">Veuillez lire et accepter les conditions d'utilisation</a></b>
+		</label>
+        &nbsp;<input type="checkbox" name="rgpd_ok" id="rgpd_ok" onChange="$('#ls-button-submit').prop('disabled', !$(this).prop('checked'));" /><br />
+    </div>
+</div>
+<div class="collapse" id="data-security-modal-##sid##">
+    <div class="panel panel-primary">
+        <div class="panel-heading">
+            <h4 class="modal-title">Information sur la collecte des données à caractère personnel</h4>
+        </div>
+        <div class="panel-body">
+			##rgpd_texte##
+		</div>
+        <div class="panel-footer">
+            <button type="button" class="btn btn-primary" onclick="$('#rgpd_ok').prop('checked',true).trigger('change');" data-dismiss="modal">Accepter</button>
+            <button type="button" class="btn btn-default" onclick="$('#data-security-modal-##sid##').collapse('hide');">Fermer</button>
+        </div>
+    </div>
+</div>
+<div class="row text-right ap_margin">
+		<input type="submit" type="submit" id="ls-button-submit" class="btn btn-lg btn-primary" value="Poursuivre vers le questionnaire" disabled="" />
+</div>
+</form>
+</body>
+</html>
