@@ -2,7 +2,7 @@
 /*********************************************************************************************************************
 Plugin RGPD pour LimeSurvey
 Tester sur version 3.22.1+200129
-Version 1.0
+Version 1.01
 Academie de Poitiers
 Eric Camus
 *********************************************************************************************************************/
@@ -630,7 +630,7 @@ TSA 80715 - 75334 PARIS CEDEX 07.</div>',
 	public function rgpd_texte_survey($sid,$param=false) {  // retourne le texte du RGPD (rgpd_texte)
 		$dommail=str_replace('.','\\.',$this->rgpd_gs['rgpd_domaine_mail']);
 		$vals=$this->rgpd_write_survey($sid);
-		$remp=array();  // tableau de remplacement
+		$remp=[];  // tableau de remplacement
 		foreach($vals as $n=>$v) {
 			$style='';
 			switch($this->settings[$n]['type']) {
@@ -640,7 +640,17 @@ TSA 80715 - 75334 PARIS CEDEX 07.</div>',
 					$remp['##'.$n.'##']=$this->settings[$n]['options'][$io];
 					break;
 				case 'text':  // champ de texte : les retour chariot sont changer en <br />
-					$t=htmlspecialchars(($v=='')?$this->rgpd_gs[$n]:$v);
+					$t=($v=='')?$this->rgpd_gs[$n]:$v;
+					$aremp=[];
+					if(preg_match_all(';https?://([^ \r\n]+);',$t,$reg,PREG_SET_ORDER)) {  // lien sur texte maxi 50 cars
+						foreach($reg as $l) {
+							$atxt=(strlen($l[1])>50)?substr($l[1],0,50).'...':$l[1];
+							$aremp[htmlspecialchars($l[0])]='<a href="'.$l[0].'" target="_blank">'.
+								htmlspecialchars($atxt).'</a>';
+						}
+					}
+					$t=htmlspecialchars($t);
+					if($aremp) $t=strtr($t,$aremp);
 					$remp['##'.$n.'##']=preg_replace(';\r?\n;','<br />',$t);
 					$style=' style="text-align:left;"';
 					break;
