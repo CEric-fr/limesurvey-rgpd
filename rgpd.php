@@ -189,6 +189,7 @@ TSA 80715 - 75334 PARIS CEDEX 07.</div>',
 		$this->nom_bd['menuliste']='`'.$menuliste->tableName().'`';
 		$this->nom_bd['param_survey']='`'.App()->getDb()->tablePrefix.'survey_rgpd`';
 		$this->nom_bd['survey']='`'.App()->getDb()->tablePrefix.'surveys`';  // !! comment obtenir autrement ??
+		$this->nom_bd['prefix']=preg_quote(App()->getDb()->tablePrefix,';');  // prefix echapper PREG pour CRON
 		$in=$this->getPluginSettings();  // donnees settings plugin dans base
 		foreach($in as $n=>$v) {  // init $rgpd_gs
 			if(isset($v['default'])) {
@@ -565,12 +566,12 @@ TSA 80715 - 75334 PARIS CEDEX 07.</div>',
 		$buf=Yii::app()->db->schema->getTableNames();  // les tables
 		if($buf) {
 			foreach($buf as $t) {
-				if(preg_match(';^lime_old_.*_([0-9]{14})$;',$t,$reg)) {  // tous les old
+				if(preg_match(';^'.$this->nom_bd['prefix'].'old_.*_([0-9]{14})$;',$t,$reg)) {  // tous les old
 					if($reg[1]<$datebd) {
 						$out['table_sup'][]=$t;
 					}
 				}
-				elseif(preg_match(';^lime_survey_([0-9]+)(.*)$;',$t,$reg)) {
+				elseif(preg_match(';^'.$this->nom_bd['prefix'].'survey_([0-9]+)(.*)$;',$t,$reg)) {
 					if($reg[2]) {
 						$out['table_survey'][$reg[1]][$reg[2]]=$t;
 					}
@@ -578,7 +579,7 @@ TSA 80715 - 75334 PARIS CEDEX 07.</div>',
 						$out['table_survey'][$reg[1]]['_survey']=$t;
 					}
 				}
-				elseif(preg_match(';^lime_tokens_([0-9]+)$;',$t,$reg)) {
+				elseif(preg_match(';^'.$this->nom_bd['prefix'].'tokens_([0-9]+)$;',$t,$reg)) {
 					$out['table_survey'][$reg[1]]['_tokens']=$t;
 				}
 			}
