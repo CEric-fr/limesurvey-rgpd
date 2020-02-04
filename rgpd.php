@@ -85,6 +85,8 @@ finalités spécifiques.</div>
 <div><b>Source de données</b> :</div>
 <div>
 <ul><li>Les données saisies par la personne&nbsp;dans&nbsp;l\'enquête</li>
+<li>Les données d\'identification (prénom, nom et adresse mail) issues des bases informatiques académiques 
+uniquement pour les personnes concernées par une enquête ciblée et envoyée nominativement.</li>
 <li>Les données de connexion (adresse IP, logs)</li>
 <li>Les cookies (permet de reprendre le questionnaire en cours de saisie)</li>
 </ul>
