@@ -46,6 +46,19 @@ Cette page permet de configurer le plugin RGPD, elle est divisée en quatre grou
 	* **Périodicité de la suppression automatique (en jours)** : si la gestion est activée, permet de définit la période à laquelle s'exécute le processus. Valeur au choix dans : 7, 15, 30 ou 60 jours.
 	* **Lancer maintenant le processus de suppression** : permet de faire exécuter de suite le processus en cochant la case et en validant par *Sauvegarde*. Ne fonctionne que si la suppression automatique est activée. Cette case reste toujours décochée.
 
+### Page de statut des données
+
+Uniquement accessible aux administrateurs généraux.
+Page d’information qui affiche :
+* la configuration actuelle de la gestion des données.
+* les opérations à faire si la suppression des données était lancée maintenant : calcul direct par rapport au jour courant.
+* la liste des fichiers non présents dans la base : avec action possible de suppression.
+
+Ou juste l’état en cours si une opération de suppression est active.
+
+Cette page peut vous demander de continuer le calcul ou la suppression en cours afin d’éviter les temps d’exécution trop long qui aboutirait à une page blanche, il faut alors cliquer sur cette demande.
+
+
 ### Installation
 
 Cette version n'a été testé qu'avec la version *3.22.1+200129* de *LimeSurvey*.
