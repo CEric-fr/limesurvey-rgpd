@@ -1,8 +1,8 @@
 <?php
 /*********************************************************************************************************************
 Plugin RGPD pour LimeSurvey
-Tester sur version 3.22.1+200129
-Version 1.01
+Tester sur version 3.22.1+200129 avec base MySql
+Version 2.10
 Academie de Poitiers
 Eric Camus
 *********************************************************************************************************************/
@@ -143,17 +143,17 @@ TSA 80715 - 75334 PARIS CEDEX 07.</div>',
 			'type' => 'info',
 			'content' => '<h4>Gestion des données :</h4>',
 		),
-		'rgpd_adm_duree'=>array(
-			'type'=>'int',
-			'label'=>'Durée de conservation des données (en mois)',
-			'default'=>'12',
-			'help'=>'##rgpd_adm_duree##',
-		),
 		'rgpd_active_cons'=>array(
 			'type'=>'boolean',
 			'label'=>'Activer la suppression automatique des données au delà de la durée de conservation',
 			'default'=>0,
 			'help'=>'',  // cf messages
+		),
+		'rgpd_adm_duree'=>array(
+			'type'=>'int',
+			'label'=>'Durée de conservation des données (en mois)',
+			'default'=>'12',
+			'help'=>'##rgpd_adm_duree##',
 		),
 		'rgpd_periode_cons'=>array(
 			'type'=>'select',
@@ -180,18 +180,28 @@ TSA 80715 - 75334 PARIS CEDEX 07.</div>',
 	protected $rgpd_repcron='';  // repertoire des log du cron (cf init)
 	protected $rgpd_statutcron='';  // nom du fichier de statut
 	protected $rgpd_lockcron='';  // nom du fichier lock du cron (present si en execution)
-	protected $rgpd_messages=[
+	protected $rgpd_parlfs='';  // nom du fichier de la liste des fichiers a supprimer
+    protected $rgpd_repupload='';  // rep d'upload des fichiers
+    protected $rgpd_repupsave='';  // rep de sauvegarde des fichiers upload supprime par le nettoyage
+	protected $rgpd_messages=array(
 	'rgpd_raz_cons'=>'Cette suppression manuelle supprimera les données selon la durée de conservation choisie.',
-	'rgpd_active_cons'=>'Cette action est déclenchée par la visite d\'une page de l\'outil d\'enquête.'];
-
-	public function init() {
+	'rgpd_active_cons'=>'Cette action est déclenchée par la visite d\'une page de l\'outil d\'enquête.',
+    );
+    // Initialisation des variables utiles au fonctionnement
+    private function rgpd_init_var() {
 		$menu=new Surveymenu;
 		$menuliste=new SurveymenuEntries;
 		$this->nom_bd['menu']='`'.$menu->tableName().'`';
 		$this->nom_bd['menuliste']='`'.$menuliste->tableName().'`';
-		$this->nom_bd['param_survey']='`'.App()->getDb()->tablePrefix.'survey_rgpd`';
-		$this->nom_bd['survey']='`'.App()->getDb()->tablePrefix.'surveys`';  // !! comment obtenir autrement ??
-		$this->nom_bd['prefix']=preg_quote(App()->getDb()->tablePrefix,';');  // prefix echapper PREG pour CRON
+        $this->nom_bd['raw_prefix']=App()->getDb()->tablePrefix;  // prefix brut simple
+		$this->nom_bd['param_survey']='`'.$this->nom_bd['raw_prefix'].'survey_rgpd`';
+		$this->nom_bd['survey']='`'.$this->nom_bd['raw_prefix'].'surveys`';  // !! comment obtenir autrement ??
+		$this->nom_bd['prefix']=preg_quote($this->nom_bd['raw_prefix'],';');  // prefix echapper PREG pour CRON
+        $this->nom_bd['nom_base']='';
+        $x=App()->getDb()->connectionString;
+        if(preg_match('/dbname=([^;]+);?$/',$x,$reg)) {
+            $this->nom_bd['nom_base']=$reg[1];
+        }
 		$in=$this->getPluginSettings();  // donnees settings plugin dans base
 		foreach($in as $n=>$v) {  // init $rgpd_gs
 			if(isset($v['default'])) {
@@ -203,6 +213,10 @@ TSA 80715 - 75334 PARIS CEDEX 07.</div>',
 		if(!file_exists($this->rgpd_repcron)) mkdir($this->rgpd_repcron);  // creation si pas existe
 		$this->rgpd_statutcron=$this->rgpd_repcron.'statut.txt';  // fichier de status du cron
 		$this->rgpd_lockcron=$this->rgpd_repcron.'lock.txt';  // un seul cron en meme temps
+        $this->rgpd_parlfs=$this->rgpd_repcron.'parlfs.txt';
+        $this->rgpd_repupload=$_SERVER['DOCUMENT_ROOT'].'/upload/surveys/';  // rep survey upload
+        $this->rgpd_repupsave=$_SERVER['DOCUMENT_ROOT'].'/upload/rgpdsave/';  // rep sauvegarde rgpd
+		if(!file_exists($this->rgpd_repupsave)) mkdir($this->rgpd_repupsave);  // creation si pas existe
 		$this->rgpd_message_settings();
 		$logo=glob(dirname(__FILE__).'/assets/logo_*.*');
 		$nbroot=strlen($_SERVER['DOCUMENT_ROOT']);
@@ -220,6 +234,9 @@ TSA 80715 - 75334 PARIS CEDEX 07.</div>',
 			$this->settings['rgpd_info_1']['content'].='<div style="float:right;"><a href="'.
 				substr($f,$nbroot).'" target="_blank"><span class="fa fa-info-circle"></span> Aide</a></div>';
 		}
+    }
+	public function init() {
+        $this->rgpd_init_var();
 		$this->subscribe('beforeSurveyPage');  // le questionnaire
 		$this->subscribe('beforeAdminMenuRender');  // menu RGPD config generale
 		$this->subscribe('beforeActivate');  // activation
@@ -277,6 +294,14 @@ TSA 80715 - 75334 PARIS CEDEX 07.</div>',
 	public function beforeAdminMenuRender() {
 		if(Permission::model()->hasGlobalPermission('superadmin', 'read')) {
 			$event=$this->getEvent();
+            $url=$this->api->createUrl(
+                'admin/pluginhelper',
+                array(
+                    'sa'     => 'fullpagewrapper',
+                    'plugin' => $this->getName(),
+                    'method' => 'rgpdpagestatut'  // Method name in our plugin
+                    )
+                );
 			$event->set('extraMenus', array(
 			  new Menu(array(
 				'isDropDown' => true,
@@ -284,6 +309,7 @@ TSA 80715 - 75334 PARIS CEDEX 07.</div>',
 				'menuItems' => array(
 					new MenuItem(array('href'=>'/index.php?r=admin/pluginmanager/sa/configure&id='.
 									   $this->id,'label'=>'Configuration générale')),
+                    new MenuItem(array('href'=>$url,'label'=>'Statut données')),
 				)
 			  ))
 			));
@@ -307,20 +333,20 @@ TSA 80715 - 75334 PARIS CEDEX 07.</div>',
 		if($chact=='admin:pluginmanager:configure') {
 			$majmes=false;
 			$delfich=false;
-			if(isset($_POST['rgpd_raz_cons']) and $_POST['rgpd_raz_cons']==1) {
-				if(file_exists($this->rgpd_statutcron)) {  // supprimer le fichier
+			if(isset($_POST['rgpd_raz_cons']) and $_POST['rgpd_raz_cons']==1) {  // lancer manuel de suppression
+				if(file_exists($this->rgpd_statutcron)) {
 					$x=$this->rgpd_getcroninfo(true);
 					if($x['statut']==0) {  // si pas en cour de lancer
-						unlink($this->rgpd_statutcron);
+						unlink($this->rgpd_statutcron);  // supprimer le fichier
 						$this->rgpd_logcron('Fichier status supprimé.');
 						$delfich=true;
 					}
 				}
-				$_POST['rgpd_raz_cons']=0;
+				$_POST['rgpd_raz_cons']=0;  // ne jamais le mettre en cocher (c'est juste un bouton poussoir)
 				$_REQUEST['rgpd_raz_cons']=0;
 				$majmes=true;
 			}
-			if(isset($_POST['rgpd_active_cons'])) {
+			if(isset($_POST['rgpd_active_cons'])) {  // activation suppression automatique
 				$active=0;
 				if($_POST['rgpd_active_cons']==1) $active=1;
 				if($this->rgpd_gs['rgpd_active_cons'] xor $active) {  // en cas de changement
@@ -408,41 +434,56 @@ TSA 80715 - 75334 PARIS CEDEX 07.</div>',
 		$itemmenu=new SurveymenuEntries;
 		$itemmenu->reorderMenu($trouve['menu_id']);
 	}
-	// CRON dans deux cas : questionnaire (id>0) et admin (id=0) 
-	private function rgpd_exec_cron($id=0) {
-		if($this->rgpd_gs['rgpd_active_cons']) {  // on est en mode actif
+	// CRON dans deux cas : questionnaire (id>0) et admin (id=0) $debug=true force execution en mode debug
+	private function rgpd_exec_cron($id=0,$debug=false) {
+        $par=false;
+		if($this->rgpd_gs['rgpd_active_cons'] or $debug) {  // on est en mode actif
 			if(file_exists($this->rgpd_lockcron) and filemtime($this->rgpd_lockcron)>(time()-30)) {
-				return;  // si deja un cron et present depuis moins de 30s
+				return $par;  // si deja un cron et present depuis moins de 30s
 			}
 			$par=$this->rgpd_getcroninfo();
 			if($par['statut']==0) {
-				return;  // rien a faire, on attend
+				return $par;  // rien a faire, on attend
 			}
 			if(file_exists($this->rgpd_lockcron) and filemtime($this->rgpd_lockcron)>(time()-30)) {
-				return;  // si deja un cron et present depuis moins de 30s
+				return false;  // si deja un cron et present depuis moins de 30s
 			}
 			file_put_contents($this->rgpd_lockcron,$id.' '.time());  // on lock ici
-			$deldt=time()-($this->rgpd_gs['rgpd_adm_duree']+1)*2628000;  // on envele (mois+1)
-			$df=time()+4;  // maximum pendant 4s
-			$this->rgpd_logcron('ID='.$id.' Etape='.$par['etape']);
+            $df=time()+1;  // duree en fonction de la page => sur questionnaire 1s sinon admin 4s
+            if($id==0 or $debug) {  // admin ou debug
+                $df=time()+4;
+            }
+			$this->rgpd_logcron('ID='.$id.' Etape='.$par['etape'].($debug?' DEBUG':''));
 			switch($par['etape']) {
 				case 0:  // juste enregistrer
 					$this->rgpd_logcron('Fin Etape='.$par['etape']);
 					$par['etape']++;  // suite
 					break;
-				case 1:  // suppression des tables old
-					if($par['table_sup']) {
+				case 1:  // suppression des tables avec leurs fichiers (plus de vider)
+					if($par['table_sup']) {  // il reste des tables a supprimer
 						foreach($par['table_sup'] as $cle=>$t) {
-							if(time()>$df) break;  // fini, plus le temps
-							$texist=$this->rgpd_sql_request("show table status like '".$t."'");
-							if($texist) {
-								Yii::app()->db->createCommand()->dropTable($t);
-								$this->rgpd_logcron('Table : '.$t.' supprimée',1);
-							}
-							else {
-								$this->rgpd_logcron('Table : '.$t.' absente',1);
-							}
+                            $ids=$this->rgpd_getidfromtable($t);
+                            if($ids['id']>0) {  // ok
+                                $ch=array();
+                                $rep='';
+                                if(isset($par['table_fich'][$t],$par['survey'][$ids['id']]['rep_upload'])) {
+                                    $ch=$par['table_fich'][$t];  // si existe
+                                    $rep=$par['survey'][$ids['id']]['rep_upload'];
+                                }
+                                $mode=false;
+                                if($ids['type']=='old' or !isset($par['survey'][$ids['id']])) {
+                                    $mode=true;  // on ne supprime que les table old et sans enquete
+                                }
+                                $res=$this->rgpd_table_fichier_del($t,$mode,$ch,$rep);
+                                $this->rgpd_logcron('Table '.$t.' :'.PHP_EOL.$res,1);
+                            }
+                            else {  // pas de ID survey trouve : on signale et c'est tout
+                                $this->rgpd_logcron('Table : '.$t.' non comprise (pas d\'ID trouvé)',1);
+                            }
 							unset($par['table_sup'][$cle]);
+							if(time()>$df) {  // fini, plus le temps, on en fait au moins 1
+                                break;
+                            }
 						}
 					}
 					else {
@@ -450,84 +491,44 @@ TSA 80715 - 75334 PARIS CEDEX 07.</div>',
 						$par['etape']++;  // suite
 					}
 					break;
-				case 2:  // nettoyage des tables
-					if($par['table_survey']) {
-						foreach($par['table_survey'] as $cle=>$t) {
-							if(time()>$df) break;  // fini, plus le temps
-							$buf=$this->rgpd_sql_request('select `expires`,`startdate`,`datecreated` from '.
-														 $this->nom_bd['survey'].' where `sid`='.$cle,false,true);
-							$del=true;  // mettre a false si presence questionnaire dans la base
-							$vide=true;  // mettre a false si on ne doit pas vider les tables
-							if($buf) {  // on 
-								$date=0;
-								if($buf['datecreated']) {
-									$date=strtotime($buf['datecreated']);
-								}
-								if($buf['startdate']) {
-									$x=strtotime($buf['startdate']);
-									if($x>$date) $date=$x;
-								}
-								if($buf['expires']) {
-									$x=strtotime($buf['expires']);
-									if($x>$date) $date=$x;
-								}
-								$vide=false;
-								$del=false;
-								if($date>0) {
-									if($deldt>$date) {
-										$vide=true;
-									}
-								}
-							}
-							if($del) {  // on supprime les tables si existent car plus de questionnaire !!!
-								foreach($t as $d) {
-									$texist=$this->rgpd_sql_request("show table status like '".$d."'");
-									if($texist) {
-										Yii::app()->db->createCommand()->dropTable($d);
-										$this->rgpd_logcron('Table : '.$d.' supprimée',1);
-									}
-									else {
-										$this->rgpd_logcron('Table : '.$d.' absente',1);
-									}
-								}
-								$vide=false;
-							}
-							if($vide) {  // on vide les tables si existent
-								foreach($t as $d) {
-									$texist=$this->rgpd_sql_request("show table status like '".$d."'",false,true);
-									if($texist) {
-										if(isset($texist['Rows']) and $texist['Rows']>0) {
-											Yii::app()->db->createCommand()->truncateTable($d);
-											$this->rgpd_logcron('Table : '.$d.' vidée',1);
-										}
-										else {
-											$this->rgpd_logcron('Table : '.$d.' déjà vide',1);
-										}
-									}
-									else {
-										$this->rgpd_logcron('Table : '.$d.' absente',1);
-									}
-								}
-							}
-							unset($par['table_survey'][$cle]);
+				case 2:  // suppression repertoire
+					if($par['rep_del']) {
+						foreach($par['rep_del'] as $cle=>$r) {
+                            if(!$debug) {  // normal
+                                if($this->rgpd_recursive_suppr_rep($r)) {
+                                    $this->rgpd_logcron('Répertoire supprimé : '.$r,1);
+                                }
+                                else {
+                                    $this->rgpd_logcron('Erreur, suppression du répertoire : '.$r,1);
+                                }
+                            }
+                            else {
+                                $this->rgpd_logcron('Répertoire a supprimer : '.$r.' DEBUG',1);
+                            }
+							unset($par['rep_del'][$cle]);
+							if(time()>$df) {  // fini, plus le temps, on en fait au moins 1
+                                break;
+                            }
 						}
 					}
 					else {
 						$this->rgpd_logcron('Fin Etape='.$par['etape']);
-						$par['etape']=100;  // suite
+						$par['etape']++;  // suite
 					}
 					break;
+                case 3:  // suppression ligne dans lime_saved_control
+                    $deltats=($this->rgpd_gs['rgpd_adm_duree']+1)*2628000;  // on envele (mois+1)
+                    $dtts=time()-$deltats;  // timestamp de la date de suppression
+                    $ok=$this->rgpd_sql_request('delete from `lime_saved_control` where `saved_date`<\''.
+                                                 date('Y-m-d H:i:s',$dtts)."'",true);  // lignes a supprimer
+                    $this->rgpd_logcron('Fin Etape='.$par['etape']);
+                    $par['etape']=100;  // suite
+                    break;
 				case 100:
 					$x=$this->rgpd_gs['rgpd_periode_cons'];
 					$next=date('Ymd',time()+(86400*$this->settings['rgpd_periode_cons']['options'][$x]));
 					$this->rgpd_logcron('***** Fin nettoyage, prochain : '.$next);
-					unset($par);  // destruction
-					$par=['date_next'=>$next,  // prochain dans X jours
-						  'statut'=>0,
-						  'etape'=>0,
-						  'table_sup'=>[],
-						  'table_survey'=>[],
-						  ];
+                    $par=$this->rgpd_get_afaire($next);  // init zero
 					break;
 				default:  // hors porter !!!
 					$par['etape']=1;  // on recommence !!!
@@ -536,61 +537,198 @@ TSA 80715 - 75334 PARIS CEDEX 07.</div>',
 			$this->rgpd_getcroninfo($par);  // enregistrer
 			unlink($this->rgpd_lockcron);  // liberer lock cron
 		}
+        return $par;  // retourne les parametres
 	}
 	// recupere le status du CRON, si $val=array alors ecrit seulement, si $val=true alors retourne contenu
-	// si pas de $val alors retourne le contenu si existe sinon le creer
-	private function rgpd_getcroninfo($val=[]) {
+	// si pas de $val alors retourne le contenu si existe sinon le creer avec analyse
+	private function rgpd_getcroninfo($val=array()) {
 		if($val and is_array($val)) {  // des valeurs alors on ecrit
 			return file_put_contents($this->rgpd_statutcron,serialize($val));
 		}
-		$out=[];
-		if(file_exists($this->rgpd_statutcron)) {
+		$out=array();
+		if(file_exists($this->rgpd_statutcron)) {  // exite
 			$out=unserialize(file_get_contents($this->rgpd_statutcron));  // pas de base64
-			if(isset($out['date_next'],$out['statut'],$out['etape'],
-					 $out['table_sup'],$out['table_survey'])) {
-				if($out['statut']!=0) return $out;  // fini car en cour
-				if($out['date_next']>date('Ymd')) return $out;  // pas encore la date
+			if(isset($out['date_next'],$out['statut'],$out['etape'],$out['survey'],$out['table_fich'],
+					 $out['table_sup'],$out['rep_del'],$out['rep_fich'])) {
+				if($out['statut']!=0) {  // en cour statut=1, fin sans analyse
+                    return $out;
+                }
+				if($out['date_next']>date('Ymd')) {  // pas encore la date de la prochaine supp, fin sans analyse
+                    return $out;
+                }
 			}
+            else {  // contenu en erreur => on lance
+                unlink($this->rgpd_statutcron);
+                $out=array();
+            }
 		}
-		if($val===true) {
+		if($val===true) {  // force le retour d'un contenu sans analyse (vide ou pas) statut=0
+            if(!$out) {
+                $out=$this->rgpd_get_afaire(date('Ymd'));
+            }
 			return $out;
 		}
-		// on retourne le nouveau test sans creer le fichier, ou nouveau cycle qqs sa presence
-		$out=['date_next'=>date('Ymd'),  // date prochain test
-			  'statut'=>1,  // statut : 0=en attente, 1=en cours de test
-			  'etape'=>0,  // etape de test de depart qui ne fait que enregistrer le fichier
-			  'table_sup'=>[],  // liste restante des tables a supprimer
-			  'table_survey'=>[],  // liste des tables survey a tester
-			 ];
 		$this->rgpd_logcron('***** Début nettoyage');
-		$deltats=($this->rgpd_gs['rgpd_adm_duree']+1)*2628000;  // on envele (mois+1)
-		$datebd=date('YmdHis',time()-$deltats);
-		$buf=Yii::app()->db->schema->getTableNames();  // les tables
-		if($buf) {
-			foreach($buf as $t) {
-				if(preg_match(';^'.$this->nom_bd['prefix'].'old_.*_([0-9]{14})$;',$t,$reg)) {  // tous les old
-					if($reg[1]<$datebd) {
-						$out['table_sup'][]=$t;
-					}
-				}
-				elseif(preg_match(';^'.$this->nom_bd['prefix'].'survey_([0-9]+)(.*)$;',$t,$reg)) {
-					if($reg[2]) {
-						$out['table_survey'][$reg[1]][$reg[2]]=$t;
-					}
-					else {
-						$out['table_survey'][$reg[1]]['_survey']=$t;
-					}
-				}
-				elseif(preg_match(';^'.$this->nom_bd['prefix'].'tokens_([0-9]+)$;',$t,$reg)) {
-					$out['table_survey'][$reg[1]]['_tokens']=$t;
-				}
-			}
-		}
-		return $out;
+		return $this->rgpd_get_afaire();  // lancer l'analyse statut=1 donc on fait la suppression au prochain CRON
 	}
-	private function rgpd_logcron($txt='',$sub=0) {  // logger le texte
-		$fl=$this->rgpd_repcron.'xlog_'.date('Ymd').'.txt';  // fichier de log
+    private function rgpd_get_afaire($next=0) {  // on retourne le contexte des info a faire selon parametre
+        //$start=microtime(true);
+        $datenext=$next;
+        if($next==0) {
+            $datenext=date('Ymd');
+        }
+        $out=array('date_next'=>$datenext,  // date prochain test
+                   'err'=>false,  // une erreur presente
+                   'txterr'=>'',  // texte de l'erreur
+                   'statut'=>1,  // statut : 0=en attente, 1=en cours de test
+                   'etape'=>0,  // etape de test de depart qui ne fait que enregistrer le fichier
+                   'survey'=>array(),  // liste des enquetes avec [sid]=>array('sid',...) pour info
+                   'table_fich'=>array(),  // liste des tables avec fichier nom_table=>array(nom_champ,nom_champ,...)
+                   'table_sup'=>array(),  // liste des tables a supprimer ou sans enquete
+                   //'table_vide'=>array(),  // liste des tables survey a vider
+                   'lime_saved_control'=>0,  // nb de ligne a supprimer dans la table "lime_saved_control"
+                   'rep_del'=>array(),  // les repertoires a supprimer
+                   'rep_fich'=>array(),  // les repertoires avec fichiers []=>rep files ou images
+                   'nb_survey'=>0,  // nombre total d'enquetes (count('survey'))
+                   'nb_survey_supr'=>0,  // nombre d'enquetes avec suppression (hors old)
+                   'nb_table_old'=>0,  // nombre de table old total (y compris a supprimer)
+                   'nb_table_act'=>0,  // nombre de table active total (y compris a supprimer)
+                   'nb_tablesup_old'=>0,  // nombre de table old a supprimer
+                   'nb_tablesup_orp_old'=>0,  // nombre de table old orpheline supprimer
+                   'nb_tablesup_act'=>0,  // nombre de table active a supprimer
+                   'nb_tablesup_orp_act'=>0,  // nombre de table active orpheline supprimer
+                   'nb_table_act_vide'=>0,  // nombre de table active mais vide
+                   'nb_rep_orp'=>0,  // nombre de repertoires orphelins
+                   'nb_rep_act'=>0,  // nombre de repertoires actifs (files et images)
+                  );
+        if($next!=0) {  // si on donne une date, juste rien a faire
+            $out['statut']=0;
+            return $out;
+        }
+		$deltats=($this->rgpd_gs['rgpd_adm_duree']+1)*2628000;  // on envele (mois+1)
+        $dtts=time()-$deltats;  // timestamp de la date de suppression
+		$datebd=date('YmdHis',$dtts);
+        $buf=$this->rgpd_sql_request('select `sid` from '.$this->nom_bd['survey']);  // toutes les enquetes
+        if($buf) {
+            foreach($buf as $e) {  // mettre dans $out['survey'][ID]=array('sid'=>ID)
+                $out['survey'][$e['sid']]=$e;
+            }
+        }
+        $out['nb_survey']=count($out['survey']);  // nombre d'enquetes
+        $buf=$this->rgpd_sql_request('select TABLE_NAME,COLUMN_NAME from information_schema.COLUMNS'.
+                                     " where COLUMN_NAME like '%_filecount' and TABLE_SCHEMA='".
+                                     $this->nom_bd['nom_base']."'");
+        if($buf) {
+            foreach($buf as $t) {  // on range les noms des champs de fichier par nom de table
+                $out['table_fich'][$t['TABLE_NAME']][]=substr($t['COLUMN_NAME'],0,-10);
+            }
+        }
+        $buf=$this->rgpd_sql_request('show table status');
+		if($buf) {
+            if(isset($buf[0]['Name'],$buf[0]['Rows'],$buf[0]['Update_time'])) {  // on lance
+                foreach($buf as $t) {
+                    $ids=$this->rgpd_getidfromtable($t['Name']);  // detecte les tables d'enquetes
+                    if($ids['type']=='old') {  // sauvegarde avec date
+                        $out['nb_table_old']++;
+                        if(isset($out['survey'][$ids['id']])) {  // enquete existe
+                            if($ids['date']<$datebd) {  // enquete existe mais vieille
+                                $out['nb_tablesup_old']++;
+                                $out['table_sup'][]=$t['Name'];
+                                $out['survey'][$ids['id']]['table_supp'][]=$t['Name'];  // pour info
+                            }
+                            else {
+                                $out['survey'][$ids['id']]['table_olds'][]=$t['Name'];  // pour info                        
+                            }
+                        }
+                        else {  // enquete existe plus donc suppr
+                            $out['nb_tablesup_orp_old']++;
+                            $out['table_sup'][]=$t['Name'];
+                        }
+                    }
+                    elseif($ids['type']=='act') {  // autres
+                        $out['nb_table_act']++;
+                        if(isset($out['survey'][$ids['id']])) {  // existe
+                            $tdup=date('YmdHis',strtotime($t['Update_time']));
+                            if($t['Rows']>0) {  // si pas vide
+                                if($tdup<$datebd) {  // supprimer car trop vieille
+                                    if(!isset($out['survey'][$ids['id']]['table_supp'])) {
+                                        $out['nb_survey_supr']++;
+                                    }
+                                    $out['nb_tablesup_act']++;
+                                    $out['survey'][$ids['id']]['table_supp'][]=$t['Name'];  // pour info
+                                    $out['table_sup'][]=$t['Name'];  // liste des tables a supprimer
+                                }
+                                else {  // voir chaque ligne ou non car plus rescente
+                                    $out['survey'][$ids['id']]['table_acti'][]=$t['Name'];  // pour info
+                                }
+                            }
+                            else {  // si vide alors ne rien faire, permet de connaitre les tables
+                                $out['nb_table_act_vide']++;
+                                $out['survey'][$ids['id']]['table_vide'][]=$t['Name'];  // pour info
+                            }
+                        }
+                        else {  // existe pas
+                            $out['nb_tablesup_orp_act']++;
+                            $out['table_sup'][]=$t['Name'];  // liste des tables a supprimer
+                        }
+                    }
+                }
+            }
+            else {  // il manque un parametre utile au fonctionnement => fin sur erreur
+                $out['err']=true;
+                $out['txterr']='Il manque un paramètres utile de la requête "show table status".';
+                return $out;
+            }
+        }
+        else {  // pas de table dans la base => fin sur erreur
+            $out['err']=true;
+            $out['txterr']='Pas de table dans la base !!!.';
+            return $out;
+        }
+        $buf=glob($this->rgpd_repupload.'*',GLOB_ONLYDIR);
+        if($buf) {  // on fait une liste des reps a supprimer et des reps upload existants
+            $nbrs=strlen($this->rgpd_repupload);
+            foreach($buf as $r) {
+                $id=(int)substr($r,$nbrs);
+                if(isset($out['survey'][$id])) {  // enquete existe : voir si reps existent
+                    if(is_dir($r.'/files/')) {  // les rep d'upload client et admin
+                        $out['rep_fich'][]=$r.'/files/';
+                        $out['survey'][$id]['rep_upload']=$r.'/files/';  // pour info
+                    }
+                    if(is_dir($r.'/images/')) {  // les rep d'upload images admin
+                        $out['rep_fich'][]=$r.'/images/';
+                        $out['survey'][$id]['rep_images']=$r.'/images/';  // pour info
+                    }
+                }
+                else {  // enquete n'existe pas => supprimer
+                    $out['rep_del'][]=$r.'/';
+                }
+            }
+        }
+        $out['nb_rep_act']=count($out['rep_fich']);  // a voir pour le comptage !!!!
+        $out['nb_rep_orp']=count($out['rep_del']);
+        $buf=$this->rgpd_sql_request('select * from `lime_saved_control` where `saved_date`<\''.
+                                     date('Y-m-d H:i:s',$dtts)."'");  // le ligne a supprimer
+        if($buf) {
+            $out['lime_saved_control']=count($buf);
+        }
+        //$out['duree']=microtime(true)-$start;
+		return $out;
+    }
+    private function rgpd_getidfromtable($tab) {  // retourne ID enquete a partir nom de table
+        $out=array('type'=>'err','id'=>0,'date'=>0);
+        if(preg_match(';^'.$this->nom_bd['prefix'].'old_[^_]+_([0-9]+)(_[^_]+)?_([0-9]{14})$;',$tab,$reg)) {
+            $out=array('type'=>'old','id'=>(int)$reg[1],'date'=>(int)$reg[3]);
+        }
+        elseif(preg_match(';^'.$this->nom_bd['prefix'].'[^_]+_([0-9]+)(_.+)?$;',$tab,$reg)) {
+            $out=array('type'=>'act','id'=>(int)$reg[1],'date'=>0);
+        }
+        return $out;
+    }
+	private function rgpd_logcron($txt='',$sub=0,$fich='x') {  // logger le texte dans un fichier
+		$fl=$this->rgpd_repcron.$fich.'log_'.date('Ymd').'.txt';  // fichier de log
 		$esp=str_repeat(' ',$sub);
+        $txt=str_replace(PHP_EOL,PHP_EOL.$esp,$txt);  // pour les multilignes
 		file_put_contents($fl,date('H:i:s ').$esp.$txt.PHP_EOL,FILE_APPEND);
 	}
 	// pour trouver la ligne du menu
@@ -633,7 +771,7 @@ TSA 80715 - 75334 PARIS CEDEX 07.</div>',
 	public function rgpd_texte_survey($sid,$param=false) {  // retourne le texte du RGPD (rgpd_texte)
 		$dommail=str_replace('.','\\.',$this->rgpd_gs['rgpd_domaine_mail']);
 		$vals=$this->rgpd_write_survey($sid);
-		$remp=[];  // tableau de remplacement
+		$remp=array();  // tableau de remplacement
 		foreach($vals as $n=>$v) {
 			$style='';
 			switch($this->settings[$n]['type']) {
@@ -644,7 +782,7 @@ TSA 80715 - 75334 PARIS CEDEX 07.</div>',
 					break;
 				case 'text':  // champ de texte : les retour chariot sont changer en <br />
 					$t=($v=='')?$this->rgpd_gs[$n]:$v;
-					$aremp=[];
+					$aremp=array();
 					if(preg_match_all(';https?://([^ \r\n]+);',$t,$reg,PREG_SET_ORDER)) {  // lien sur texte maxi 50 cars
 						foreach($reg as $l) {
 							$atxt=(strlen($l[1])>50)?substr($l[1],0,50).'...':$l[1];
@@ -743,22 +881,22 @@ TSA 80715 - 75334 PARIS CEDEX 07.</div>',
 		}
 		return $maj;
 	}
-	private function rgpd_message_settings($delfich=false) {  // me bien les messages de la page de configuration
-		if($this->rgpd_gs['rgpd_active_cons']) {
+	private function rgpd_message_settings($delfich=false) {  // mettre bien les messages de la page de configuration
+		if($this->rgpd_gs['rgpd_active_cons']) {  // on a activer la suppression
 			$this->settings['rgpd_raz_cons']['help']=$this->rgpd_messages['rgpd_raz_cons'].' Cocher et "Sauvegarder"';
-			if(file_exists($this->rgpd_statutcron)) {
+			if(file_exists($this->rgpd_statutcron)) {  // si fichier present
 				$x=$this->rgpd_getcroninfo(true);
-				if($x['statut']==0) {
+				if($x['statut']==0) {  // en attente prochaine date de suppression
 					$next=substr($x['date_next'],6,2).'/'.substr($x['date_next'],4,2).'/'.substr($x['date_next'],0,4);
 					$this->settings['rgpd_active_cons']['help']=$this->rgpd_messages['rgpd_active_cons'].
 						' Prochain lancement au '.$next.'.';
 				}
-				else {
+				else {  // en cour de nettoyage
 					$this->settings['rgpd_active_cons']['help']=$this->rgpd_messages['rgpd_active_cons'].
 						' <b>Suppression automatique en cours d\'exécution</b>.';
 				}
 			}
-			else {
+			else {  // si fichier absent
 				if($delfich) {  // cas particulier ou le fichier viens d'etre supprimer
 					$this->settings['rgpd_active_cons']['help']=$this->rgpd_messages['rgpd_active_cons'].
 						' <b>Suppression automatique en cours d\'exécution</b>.';
@@ -769,11 +907,413 @@ TSA 80715 - 75334 PARIS CEDEX 07.</div>',
 				}
 			}
 		}
-		else {
+		else {  // suppression auto desactive
 			$this->settings['rgpd_raz_cons']['help']=$this->rgpd_messages['rgpd_raz_cons'].
 				' La suppression automatique doit être activée.';
 			$this->settings['rgpd_active_cons']['help']=$this->rgpd_messages['rgpd_active_cons'];
 		}
 	}
+    public function rgpdpagestatut() {  // prepare les donnees pour l'affichage
+        $out=array('data'=>array());
+        $this->rgpd_init_var();
+        $out['data']['nom_bd']=$this->nom_bd;
+        $out['data']['rgpd_logo']=$this->rgpd_logo;
+        $out['data']['rgpd_gs']=$this->rgpd_gs;
+        unset($out['data']['rgpd_gs']['rgpd_texte']);
+        $x=$out['data']['rgpd_gs']['rgpd_periode_cons'];
+        $out['data']['rgpd_gs']['rgpd_periode_cons']=$this->settings['rgpd_periode_cons']['options'][$x];
+        $out['data']['rgpd_repcron']=$this->rgpd_repcron;
+        $out['data']['rgpd_parlfs']=$this->rgpd_parlfs;
+        $out['data']['rgpd_statutcron']=$this->rgpd_statutcron;
+        $out['data']['rgpd_lockcron']=$this->rgpd_lockcron;
+        $out['data']['rgpd_repupload']=$this->rgpd_repupload;
+        $out['data']['yii_token']=$_COOKIE['YII_CSRF_TOKEN'];
+        $out['data']['etat']=$this->rgpd_getcroninfo(true);
+        //$out['data']['dev']=(strpos($this->rgpd_parlfs,'dev')!==false);
+        if($out['data']['etat']['statut']==0) {  // si pas d'action
+            $out['data']['cron_info']=$this->rgpd_get_afaire();
+            file_put_contents($this->rgpd_repcron.'page_statut_afaire.txt',print_r($out['data']['cron_info'],true));
+            $out['data']['lfs']=$this->rgpd_fichiers_orphelins($out['data']['cron_info']);
+            file_put_contents($this->rgpd_repcron.'page_statut_fichsup.txt',print_r($out['data']['lfs'],true));
+            if($out['data']['lfs']['fin'] and $out['data']['lfs']['action']) {  // liste finie
+                if(isset($_POST['act']) and $_POST['act']==1 and
+                   ($out['data']['lfs']['fichiers'] or $out['data']['lfs']['del_upld'])) {  // go suppr
+                    $out['data']['lfs']['action']=false;  // action suppression
+                    $this->rgpd_logcron('Depart nettoyage fichier',0,'f');
+                    $this->rgpd_recursive_suppr_rep($this->rgpd_repupsave,false);  // pas de test de verif operation
+                    $out['data']['lfs']=$this->rgpd_fichiers_suppr($out['data']['lfs']);
+                }
+            }
+            elseif(!$out['data']['lfs']['fin'] and !$out['data']['lfs']['action']) {  // suppr en cours
+                $out['data']['lfs']=$this->rgpd_fichiers_suppr($out['data']['lfs']);
+            }
+        }
+        return $this->renderPartial('page_statut',$out,true);
+    }
+    // suprime ou vide ($mode=true pour supprimer, false pour vider, debug pour tester)
+    private function rgpd_table_fichier_del($nomtab,$mode=true,$champfich=array(),$repfich='') {  // traite table
+        $out='';
+        if($nomtab) {
+            if($repfich and $champfich and is_array($champfich)) {  // test pour suprimer fichiers
+                $ch='`'.implode('`,`',$champfich).'`';
+                $buf=$this->rgpd_sql_request('select '.$ch.' from `'.$nomtab.'`');  // lire tous les enregistrements
+                if($buf) {
+                    foreach($buf as $l) {  // pour chaque ligne
+                        foreach($l as $v) {  // pour chaque cellule
+                            $f=isset($v)?$v:'';  // pour enlever null
+                            if($f and preg_match_all(';"filename":"([^"]+)";U',$f,$reg,PREG_SET_ORDER)) {
+                                foreach($reg as $r) {
+                                    if(file_exists($repfich.$r[1])) {
+                                        if($mode===true or $mode===false) unlink($repfich.$r[1]);  // pas de verif
+                                        $out.='  - '.$nomtab.' : '.$repfich.$r[1].' SUPPR'.PHP_EOL;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if($mode===true) {  // suppression table
+                Yii::app()->db->createCommand()->dropTable($nomtab);
+                $out.=' * '.$nomtab.' SUPPR';
+            }
+            elseif($mode===false) {  // vider table
+                Yii::app()->db->createCommand()->truncateTable($nomtab);
+                $out.=' * '.$nomtab.' VIDER';
+            }
+            else {  // mode debug
+                $out.=' * '.$nomtab.' SUPPR/VIDER:'.$mode;
+            }
+        }
+        else {
+            $out='ERREUR : pas de nom de table';
+        }
+        return $out;
+    }
+    private function rgpd_fichiers_orphelins($par) {  // les parametres issu de rgpd_get_afaire
+        $df=time()+10;  // fin de travail dans 10s maxi
+        $out=array('fin'=>false,  // operation finie si true
+                   'action'=>true,  // type d'action en cours true->liste, false->suppression
+                   'rgpdsave'=>false,  // true si presence de fichier
+                   'gsurvey'=>array(),  // liste des rep ID survey deja entree dans fichiers
+                   'fichiers'=>array(),  // liste des fichiers fu_ a supprimer (arbo systeme pas web)
+                   'uploads'=>array(),  // liste des fichiers presents dans les textes HTML sans fichier uploader
+                   'del_upld'=>array(),  // liste des fichiers files/images a supprimer/move (arbo systeme pas web)
+                   'table_fich'=>array(),  // copie de $par pour travail (vide quand travail fini)
+                   'rep_fich'=>array(),  // copie de $par pour travail mais uniquement les files : [ID]=>rep files
+                   'rep_upld'=>array(),  // copie de $par pour travail des files et images : [ID]=>array(rep)
+                   'tbl_check'=>array(array('table'=>'questions',  // liste des tables pour fichiers upload admin
+                                           'champ'=>array('question','help'),
+                                           'chsid'=>'sid',
+                                          ),
+                                     array('table'=>'groups',
+                                           'champ'=>array('description'),
+                                           'chsid'=>'sid',
+                                          ),
+                                     array('table'=>'surveys_languagesettings',
+                                           'champ'=>array('surveyls_description','surveyls_welcometext',
+                                                          'surveyls_endtext','surveyls_email_invite',
+                                                          'surveyls_email_remind','surveyls_email_register', 'surveyls_email_confirm','email_admin_notification',
+                                                          'email_admin_responses','attachments'),
+                                           'chsid'=>'surveyls_survey_id',
+                                          ),
+                                    ),
+                   //'debug'=>array(),  // pour debug (supprimer apres mise en prod finale)
+                  );
+        $initvar=false;  // pour dire qu'il faut remplir les deux variables copie
+        if(file_exists($this->rgpd_parlfs) and filemtime($this->rgpd_parlfs)<(time()-21600)) {  // fichier trop vieux
+            unlink($this->rgpd_parlfs);  // si plus de 6h -> supprime
+            $initvar=true;
+        }
+        if(!$initvar and file_exists($this->rgpd_parlfs)) {  // si pas init et fichiers buf existe
+            $cont=unserialize(file_get_contents($this->rgpd_parlfs));
+            $var=array();
+            $nbc=0;
+            foreach($out as $n=>$v) {
+                if(isset($cont[$n]) and gettype($cont[$n])==gettype($v)) {
+                    $nbc++;
+                    $var[$n]=$cont[$n];
+                }
+            }
+            if($nbc!=count($out)) {  // si pas tout ce qu'il faut -> supprime
+                unlink($this->rgpd_parlfs);
+                $initvar=true;
+            }
+            else {
+                $out=$var;
+            }
+        }  // $out contient buf ou vide a remplir
+        else {  // c'est bizarre mais j'ai peur que la suppression du premier test ne fausse le 2eme file_exists
+            $initvar=true;
+        }
+        if($initvar and isset($par['table_fich'],$par['rep_fich'])) {  // init $out avec $par
+            $out['table_fich']=$par['table_fich'];
+            foreach($par['rep_fich'] as $r) {  // mettre dans ['rep_fich'] un tableau [ID]=>rep files uniquement
+                if(preg_match(';/([0-9]+)/files/$;',$r,$reg)) {  // files
+                    $out['rep_fich'][$reg[1]]=$r;
+                    $out['rep_upld'][$reg[1]][]=$r;
+                }
+                if(preg_match(';/([0-9]+)/images/$;',$r,$reg)) {  // images
+                    $out['rep_upld'][$reg[1]][]=$r;
+                }
+            }
+        }
+        if($out['fin'] or !$out['action']) {  // si operation pas finie ou suppression
+            return $out;
+        }  // faire le check
+        if($out['table_fich']) {  // si non vide on fait
+            foreach($out['table_fich'] as $t=>$chs) {  // pour chaque table avec des champs fichiers
+                $ids=$this->rgpd_getidfromtable($t);
+                if($ids['id']>0 and isset($par['survey'][$ids['id']]['rep_upload'])) {  // si ID et rep existe
+                    if(!isset($out['gsurvey'][$ids['id']])) {  // 1 fois pour chaque enquete, lire tous les fichiers
+                        $gfs=glob($par['survey'][$ids['id']]['rep_upload'].'fu_*');  // les fichiers commence par fu_
+                        $out['gsurvey'][$ids['id']]=count($gfs);  // mettre le nombre total de fichiers
+                        if($gfs) {  // si non vide
+                            foreach($gfs as $f) {  // on ajoute les fichiers du repertoire
+                                $out['fichiers'][$f]=$f;
+                            }
+                        }
+                    }
+                    $ch='`'.implode('`,`',$chs).'`';  // tous les champs avec fichiers
+                    $buf=$this->rgpd_sql_request('select '.$ch.' from `'.$t.'`');  // lire tous les enregistrements
+                    if($buf) {  // si non vide
+                        foreach($buf as $l) {  // pour chaque ligne
+                            foreach($l as $v) {  // pour chaque cellule
+                                $f=isset($v)?$v:'';  // pour enlever null (filename ne contient que le nom du fichier)
+                                if($f and preg_match_all(';"filename":"([^"]+)";U',$f,$reg,PREG_SET_ORDER)) {
+                                    foreach($reg as $r) {  // pour chaque fichier, le retirer si present
+                                        if(isset($out['fichiers'][$par['survey'][$ids['id']]['rep_upload'].$r[1]])) {
+                                            unset($out['fichiers'][$par['survey'][$ids['id']]['rep_upload'].$r[1]]);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                unset($out['table_fich'][$t]);
+                if(time()>$df) {  // on arrete
+                    file_put_contents($this->rgpd_parlfs,serialize($out));
+                    return $out;
+                }
+            }
+        }  // si je sors ici c'est qu'il n'y a plus de table_fich a traiter
+        if($out['rep_fich']) {  // si il reste des repertoire files
+            foreach($out['rep_fich'] as $i=>$r) {  // parcours des repertoires files
+                if(!isset($out['gsurvey'][$i])) {  // si pas deja traiter alors on liste les fichiers
+                    $gfs=glob($r.'fu_*');  // le masque des fichiers commence par fu_
+                    $out['gsurvey'][$i]=count($gfs);
+                    if($gfs) {
+                        foreach($gfs as $f) {  // on ajoute tous les fichiers
+                            $out['fichiers'][$f]=$f;
+                        }
+                    }
+                }
+                unset($out['rep_fich'][$i]);  // on enleve ce rep
+                if(time()>$df) {  // on arrete
+                    file_put_contents($this->rgpd_parlfs,serialize($out));
+                    return $out;
+                }
+            }
+        }  // si je sors ici c'est qu'il n'y a plus de rep_fich a traiter
+        if($out['tbl_check']) {  // si il reste des table a explorer
+            foreach($out['tbl_check'] as $i=>$t) {  // pour chaque table
+                $buf=$this->rgpd_bdrech_fich($t['table'],$t['champ'],$t['chsid']);
+                if($buf) {  // si ya des fichier dans la base (champ texte HTML)
+                    $out['uploads']=array_merge($out['uploads'],$buf);
+                }
+                unset($out['tbl_check'][$i]);  // on enleve cette table faite
+                if(time()>$df) {  // on arrete
+                    file_put_contents($this->rgpd_parlfs,serialize($out));
+                    return $out;
+                }
+            }
+            //$out['debug']['upload']=$out['uploads'];  // debug
+        }  // si je sors ici c'est qu'il n'y a plus de tbl_check a traiter
+        if($out['rep_upld']) {  // si encore des repertoire a scanner
+            $nbroot=strlen($_SERVER['DOCUMENT_ROOT']);  // nb carac rep root
+            foreach($out['rep_upld'] as $i=>$rs) {  // pour chaque repertoire
+                foreach($rs as $r) {  // on fait les deux obligaroirement
+                    $buf=glob($r.'*.*');  // tous les fichiers (pas les fu_* car sans .ext)
+                    if($buf) {  // si non vide
+                        foreach($buf as $f) {  // pour chaque fichier
+                            $frel=substr($f,$nbroot);
+                            //$out['debug']['all_fich_rep'][]=$f;  // debug
+                            if(isset($out['uploads'][$frel])) {  // on enleve les fichiers present
+                                unset($out['uploads'][$frel]);
+                            }
+                            else {  // sinon on ajoute a supprimer
+                                $out['del_upld'][$f]=$f;
+                            }
+                        }
+                    }
+                }
+                unset($out['rep_upld'][$i]);  // on enleve cette table faite
+                if(time()>$df) {  // on arrete
+                    file_put_contents($this->rgpd_parlfs,serialize($out));
+                    return $out;
+                }
+            }
+        }  // si je sors ici c'est qu'il n'y a plus de rep_upld a traiter
+        $buf=glob($this->rgpd_repupsave.'*',GLOB_ONLYDIR);
+        if($buf) {  // ya des rep
+            $out['rgpdsave']=true;
+        }
+        $out['fin']=true;
+        file_put_contents($this->rgpd_parlfs,serialize($out));
+        return $out;
+    }
+    private function rgpd_fichiers_suppr($par) {  // on supprime tous les fichiers
+        $df=time()+15;  // temps de travail maxi
+        $out=$par;
+        $out['rgpdsave']=false;
+        if(!isset($out['fin'],$out['action'],$out['fichiers'],$out['del_upld'])) {  // on fait rien si pas de data ok
+            $this->rgpd_logcron('Erreur : manque variable.',0,'f');
+            return $out;
+        }
+        if($out['action']) {  // on fait rien si pas d'ordre
+            return $out;
+        }
+        $out['fin']=false;  // en cours de suppression
+        if($out['fichiers']) {  // suppression de tous les fichiers orphelins
+            foreach($out['fichiers'] as $i=>$f) {
+                if(file_exists($f)) {
+                    if(unlink($f)) {  // ok
+                        $this->rgpd_logcron('Fichier supprimer : '.$f,1,'f');
+                    }
+                    else {
+                        $this->rgpd_logcron('Erreur, fichier non supprimer : '.$f,1,'f');
+                    }
+                }
+                unset($out['fichiers'][$i]);
+                if(time()>$df) {  // on arrete si trop de temps passe
+                    file_put_contents($this->rgpd_parlfs,serialize($out));
+                    return $out;
+                }
+            }
+        }  // si je sors ici c'est qu'il n'y a plus de fichiers a traiter
+        if($out['del_upld']) {  // deplacement de tous les fichiers orphelins
+            foreach($out['del_upld'] as $i=>$f) {  // $f est le nom du fichier
+                if(file_exists($f)) {  // fichier present
+                    $fc=str_replace('/surveys/','/rgpdsave/',$f);
+                    $x=strrpos($fc,'/');
+                    if($x!==false) {  // on est bon
+                        $rs=substr($fc,0,$x);
+                        if(!is_dir($rs)) {
+                            if(mkdir($rs,0777,true)) {  // recursive car au moins deux niveau nouveau au debut
+                                $this->rgpd_logcron('Répertoire créer : '.$rs,1,'f');
+                            }
+                            else {
+                                $this->rgpd_logcron('Erreur, création répertoire : '.$rs,1,'f');
+                            }
+                        }
+                        if(rename($f,$fc)) {
+                            $out['rgpdsave']=true;
+                            $this->rgpd_logcron('Fichier déplacé : '.$fc,1,'f');
+                        }
+                        else {
+                            $this->rgpd_logcron('Erreur, fichier non déplacé : '.$f,1,'f');
+                        }
+                    }
+                    else {
+                        $this->rgpd_logcron('Erreur, fichier non déplacé : '.$f.', répertoire non compris : '.$fc,
+                                            1,'f');
+                    }
+                    $ft=preg_replace(';/(files|images)/;','/.thumbs$0',$f);  // on fait de meme pour le thumbs
+                    if(file_exists($ft)) {  // ce fichier n'existe pas obligatoirement
+                        $fc=str_replace('/surveys/','/rgpdsave/',$ft);
+                        $x=strrpos($fc,'/');
+                        if($x!==false) {  // on est bon
+                            $rs=substr($fc,0,$x);
+                            if(!is_dir($rs)) {
+                                if(mkdir($rs,0777,true)) {  // recursive car au moins deux niveau nouveau au debut
+                                    $this->rgpd_logcron('Répertoire créer : '.$rs,1,'f');
+                                }
+                                else {
+                                    $this->rgpd_logcron('Erreur, création répertoire : '.$rs,1,'f');
+                                }
+                            }
+                            if(rename($ft,$fc)) {
+                                $this->rgpd_logcron('Fichier déplacé : '.$fc,1,'f');
+                            }
+                            else {
+                                $this->rgpd_logcron('Erreur, fichier non déplacé : '.$ft,1,'f');
+                            }
+                        }
+                        else {
+                            $this->rgpd_logcron('Erreur, fichier non déplacé : '.$ft.', répertoire non compris : '.$fc,
+                                                1,'f');
+                        }
+                    }
+                }
+                else {
+                    $this->rgpd_logcron('Erreur, fichier absent : '.$f,1,'f');
+                }
+                unset($out['del_upld'][$i]);
+                if(time()>$df) {  // on arrete si trop de temps passe
+                    file_put_contents($this->rgpd_parlfs,serialize($out));
+                    return $out;
+                }
+            }
+        }  // si je sors ici c'est qu'il n'y a plus de del_upld a traiter
+        $this->rgpd_logcron('FINI',0,'f');
+        $out['fin']=true;
+        $out['action']=true;
+        unlink($this->rgpd_parlfs);
+        return $out;
+    }
+    private function rgpd_bdrech_fich($table,$champ,$chsid='sid') {
+        $out=array();  // cherche dans $table les fichiers present dans chaque $champ
+        if(!$table) {  // si table vide
+            return $out;
+        }
+        if(!$chsid) {  // si nom du champ survey ID vide
+            return $out;
+        }
+        if(!is_array($champ) or !$champ) {  // si champ vide ou pas un array
+            return $out;
+        }
+        foreach($champ as $c) {  // pour chaque champ (meme si un seul)
+            $buf=$this->rgpd_sql_request('select `'.$chsid.'`,`'.$c.'` from `'.$this->nom_bd['raw_prefix'].
+                                         $table.'` where `'.$c."` like '%/upload/surveys/%'");
+            if($buf) {  // ya
+                foreach($buf as $l) {  // pour chaque ligne
+                    if(preg_match_all(';(/upload/surveys/([0-9]+)/(files|images)/[^"]+)";U',
+                                      $l[$c],$reg,PREG_SET_ORDER)) {
+                        foreach($reg as $r) {  // pour chaque fichier
+                            $f=urldecode($r[1]);  // remplace les %xx et +
+                            $out[$f]=$r[2].'|'.$table.'|'.$c.'|'.$f;  // localisation dans la base
+                        }
+                    }
+                }
+            }
+        }
+        return $out;
+    }
+    private function rgpd_recursive_suppr_rep($rep,$delrep=true) {  // supprime le contenu et le repertoire donne
+        if(substr($rep,-1)=='/') {  // avec ou sans / terminal
+            $rep=substr($rep,0,-1);
+        }
+        if(!is_dir($rep)) {
+            return false;
+        }
+        $fs=array_diff(scandir($rep),array('.','..'));  // tous sauf . et ..
+        foreach($fs as $f) {
+            if(is_dir($rep.'/'.$f)) {
+                if(!$this->rgpd_recursive_suppr_rep($rep.'/'.$f)) {  // Erreur
+                    return false;
+                }
+            }
+            else {
+                if(!unlink($rep.'/'.$f)) {  // Erreur
+                    return false;
+                }
+            }
+        }
+        if($delrep) {
+            return rmdir($rep);
+        }
+        return true;
+    }
 }
 ?>
