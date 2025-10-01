@@ -6,7 +6,7 @@
 	<script type="text/javascript" src="/third_party/jquery/jquery-migrate-3.1.0.min.js"></script>
 	<script type="text/javascript" src="/assets/packages/bootstrap/bootstrap.min.js"></script>
 	<meta name="viewport" content="width=device-width, initial-scale=1.0">
-	<title>Enquêtes - RGPD</title>
+	<title>Enquêtes - Académie de Poitiers</title>
 	<style>
 		h1 {
 			text-align: center;
@@ -35,13 +35,18 @@
 <div class="row">
 	<img class="logo img-responsive" src="##rgpd_logo##" alt="##rgpd_altlogo##" title="##rgpd_altlogo##">
 </div>
-<h1>Politique de protection des données<br />&nbsp;</h1>
+<h1>##surveyls_title##<br />&nbsp;</h1>
 <form id="rgpd" method="post" action="##acp_url_ici##" onSubmit="acp_go(this.action);return false;">
 <div class="row">
+    <div class="col-sm-12">L'académie de Poitiers vous propose ce service basé sur
+        la solution libre Limesurvey.<br />
+    Cet outil est hébergé sur le site du rectorat.<br />&nbsp;</div>
+    <div class="col-sm-12">Nous vous invitons à lire et à accepter la politique de protection
+        des données décrite ci-dessous.<br />&nbsp;</div>
     <div class="col-sm-12">
-	<p><b>Pour accéder au questionnaire "##surveyls_title##".</b></p>
+	<p><b>Pour accéder au questionnaire :</b></p>
         <label for="rgpd_ok" class="control-label">
-			<b><a href="#data-security-modal-##sid##" data-toggle="collapse" class="collapsed" aria-expanded="false">Veuillez lire et accepter les conditions d'utilisation</a></b>
+			<b><a href="#data-security-modal-##sid##" data-toggle="collapse" class="collapsed" aria-expanded="false">veuillez lire et accepter la politique de protection des données</a></b>
 		</label>
         &nbsp;<input type="checkbox" name="rgpd_ok" id="rgpd_ok" onChange="$('#ls-button-submit').prop('disabled', !$(this).prop('checked'));" /><br />
     </div>
